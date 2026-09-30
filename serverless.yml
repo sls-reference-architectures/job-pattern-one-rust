@@ -135,6 +135,7 @@ stepFunctions:
   validate: true
   stateMachines:
     translateStateMachine:
+      id: TranslateStateMachine # CloudFormation logical id (same as the Node.js sibling); `name` is the AWS resource name
       name: ${self:custom.stateMachineName}
       type: EXPRESS
       loggingConfig:
@@ -228,5 +229,4 @@ resources:
 
 plugins:
 - serverless-iam-roles-per-function
-- serverless-deployment-bucket
 - serverless-step-functions
