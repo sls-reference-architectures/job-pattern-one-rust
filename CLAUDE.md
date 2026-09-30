@@ -64,3 +64,6 @@ This is a reference architecture for **agents that build serverless systems**, a
   - no job writes;
   - no workflow starts;
   - the only permitted effect is an unconsumed `delete` event.
+- This repo was created after GitHub switched new repos to **immutable OIDC subjects**. Its token `sub` is
+  `repo:sls-reference-architectures@96598675/job-pattern-one-rust@1398379420:<ref|pull_request>`, not
+  `repo:sls-reference-architectures/job-pattern-one-rust:…`. IAM trust policies must match the `@<id>` form.

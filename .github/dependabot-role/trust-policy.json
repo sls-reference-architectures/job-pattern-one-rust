@@ -10,7 +10,7 @@
       "Condition": {
         "StringEquals": { "token.actions.githubusercontent.com:aud": "sts.amazonaws.com" },
         "StringLike": {
-          "token.actions.githubusercontent.com:sub": "repo:sls-reference-architectures/job-pattern-one-rust:pull_request"
+          "token.actions.githubusercontent.com:sub": "repo:sls-reference-architectures@96598675/job-pattern-one-rust@1398379420:pull_request"
         }
       }
     }
