@@ -89,3 +89,9 @@ This is a reference architecture for **agents that build serverless systems**, a
     trust store.
 - `functions/examples/init_variants.rs` reproduces the SDK-init experiment in the Lambda base image
   (see its header). Per-phase init timings are logged on every cold start as `startup ...`.
+- **Measured and rejected: replacing the default logging setup.** The `tracing=` startup phase reads
+  ~5-6 ms in Lambda, but the setup itself costs ~0.18 ms (AL2023 container, 0.58 vCPU). A level-only
+  subscriber without `EnvFilter` saved ~0.02 ms, because filtering work moved to the first log line.
+  The Lambda figure is mostly first-execution overhead (paging in code), which lands on whatever
+  runs first in `main`. Dropping `EnvFilter` would also lose per-module `RUST_LOG` directives. Keep
+  `lambda_runtime::tracing::init_default_subscriber()`.
