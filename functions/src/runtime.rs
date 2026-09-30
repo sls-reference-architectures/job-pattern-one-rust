@@ -4,14 +4,47 @@
 use std::time::Instant;
 
 use aws_config::{BehaviorVersion, SdkConfig};
+use aws_smithy_http_client::tls::rustls_provider::CryptoMode;
+use aws_smithy_http_client::tls::{self, TlsContext, TrustStore};
+use aws_smithy_runtime_api::client::http::SharedHttpClient;
 use chrono::Utc;
 use lambda_runtime::{Diagnostic, Error, LambdaEvent, service_fn};
 
 use crate::adapters::job_store::JobStore;
 use crate::domain::job::{Job, JobStatus};
 
+/// The Amazon Trust Services roots: Amazon Root CA 1-4 and Starfield Services Root CA - G2.
+/// Every AWS service endpoint chains to one of these. Taken from the AL2023 CA bundle and checked
+/// against the SPKI SHA-256 hashes published at https://www.amazontrust.com/repository/.
+pub const AMAZON_TRUST_SERVICES_ROOTS: &[u8] = include_bytes!("../certs/amazon-trust-services.pem");
+
+/// SDK configuration with an HTTPS client that trusts only the Amazon Trust Services roots.
+///
+/// The SDK's default client loads and parses the OS CA bundle (143 certificates on AL2023) the
+/// first time TLS is configured, which `load_defaults` triggers during init. That was ~60% of
+/// SDK set-up time. These functions only ever call AWS endpoints, so five roots suffice.
 pub async fn aws_config() -> SdkConfig {
-    aws_config::load_defaults(BehaviorVersion::latest()).await
+    aws_config::defaults(BehaviorVersion::latest())
+        .http_client(amazon_https_client())
+        .load()
+        .await
+}
+
+pub fn amazon_https_client() -> SharedHttpClient {
+    aws_smithy_http_client::Builder::new()
+        .tls_provider(tls::Provider::Rustls(CryptoMode::AwsLc))
+        .tls_context(amazon_tls_context())
+        .build_https()
+}
+
+pub fn amazon_tls_context() -> TlsContext {
+    let trust_store = TrustStore::empty()
+        .with_native_roots(false)
+        .with_pem_certificate(AMAZON_TRUST_SERVICES_ROOTS);
+    TlsContext::builder()
+        .with_trust_store(trust_store)
+        .build()
+        .expect("the embedded Amazon Trust Services roots are valid PEM")
 }
 
 pub fn env(name: &str) -> Result<String, Error> {

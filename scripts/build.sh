@@ -9,8 +9,8 @@ cd "$(dirname "$0")/.."
 
 cargo lambda build --release --arm64 --output-format zip -p jobs
 
-for dir in target/lambda/*/; do
-  name="$(basename "$dir")"
-  cp "${dir}bootstrap.zip" "target/lambda/${name}.zip"
+for zip in target/lambda/*/bootstrap.zip; do
+  name="$(basename "$(dirname "$zip")")"
+  cp "$zip" "target/lambda/${name}.zip"
 done
 ls -l target/lambda/*.zip

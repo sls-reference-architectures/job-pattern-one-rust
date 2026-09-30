@@ -67,3 +67,10 @@ This is a reference architecture for **agents that build serverless systems**, a
 - This repo was created after GitHub switched new repos to **immutable OIDC subjects**. Its token `sub` is
   `repo:sls-reference-architectures@96598675/job-pattern-one-rust@1398379420:<ref|pull_request>`, not
   `repo:sls-reference-architectures/job-pattern-one-rust:…`. IAM trust policies must match the `@<id>` form.
+- **TLS trusts only the Amazon Trust Services roots** (`functions/certs/amazon-trust-services.pem`,
+  wired in `runtime::aws_config`). Loading the OS CA bundle (143 certs) was ~60% of SDK init.
+  Every AWS endpoint chains to one of the five roots. If a call ever fails with an unknown-issuer
+  TLS error, AWS has changed CAs: re-extract from the AL2023 bundle and verify SPKI hashes against
+  https://www.amazontrust.com/repository/. Never add non-AWS roots: these functions call only AWS.
+- `functions/examples/init_variants.rs` reproduces the SDK-init experiment in the Lambda base image
+  (see its header). Per-phase init timings are logged on every cold start as `startup ...`.

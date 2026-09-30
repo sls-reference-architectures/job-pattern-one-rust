@@ -1,13 +1,9 @@
-use aws_config::{BehaviorVersion, Region, SdkConfig, meta::region::RegionProviderChain};
+use aws_config::SdkConfig;
 use chrono::Utc;
 use jobs::domain::job::{Job, NewJob};
 
 pub async fn aws_config() -> SdkConfig {
-    let region = RegionProviderChain::default_provider().or_else(Region::new("us-east-1"));
-    aws_config::defaults(BehaviorVersion::latest())
-        .region(region)
-        .load()
-        .await
+    jobs::runtime::aws_config().await
 }
 
 pub async fn stack_output(config: &SdkConfig, key: &str) -> String {

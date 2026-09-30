@@ -5,4 +5,5 @@ mod job_store;
 mod phrase;
 mod request;
 mod startup;
+mod trust;
 mod workflow;
