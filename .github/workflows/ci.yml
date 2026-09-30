@@ -1,0 +1,56 @@
+name: CI & Test
+
+on:
+  push:
+    branches: [master]
+  schedule:
+    - cron: '25 6 * * *' # Daily deploy; fleet staggered 5 min apart (Free plan = 20 concurrent jobs)
+  workflow_dispatch:
+
+concurrency: one-at-a-time-please
+
+# These permissions are needed to interact with GitHub's OIDC Token endpoint.
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  buildDeployTest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Rust toolchain (from rust-toolchain.toml)
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-lambda
+      - name: Check formatting
+        run: cargo fmt --all --check
+      - name: Lint
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: Run unit tests
+        run: cargo test --workspace
+      - name: Build Lambda binaries (arm64)
+        run: cargo lambda build --release --arm64 --output-format zip -p jobs
+      - name: Use Node.js 24.x
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24.x
+          registry-url: 'https://registry.npmjs.org'
+      - name: Install deployment tooling
+        run: npm ci
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-region: us-east-1
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+      - name: Deploy
+        run: npx sls deploy --conceal
+      - name: Run int tests
+        run: cargo test -p jobs --features integration --test integration
+      - name: Run acceptance tests
+        run: cargo test -p acceptance --features acceptance --test acceptance

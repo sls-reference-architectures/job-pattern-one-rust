@@ -1,0 +1,23 @@
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      # The AWS SDK crates share aws-smithy-* runtime crates; bump them together.
+      aws-sdk:
+        patterns:
+          - "aws-*"
+      lambda-runtime:
+        patterns:
+          - "lambda_*"
+          - "aws_lambda_events"
+  - package-ecosystem: npm # deployment tooling only (osls + plugins)
+    directory: "/"
+    schedule:
+      interval: weekly
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly

@@ -1,0 +1,232 @@
+service: job-pattern-one-rust
+
+frameworkVersion: '4'
+
+configValidationMode: error
+
+# Same topology as ../job-pattern-one (the Node.js sibling) so cold starts compare like for like:
+# arm64, 1024 MB, 6 s timeout, one least-privilege role per function. Every resource name derives
+# from the service name so both stacks can live in the same account and region.
+
+provider:
+  name: aws
+  architecture: arm64
+  runtime: provided.al2023
+  stage: dev
+  region: us-east-1
+  memorySize: 1024
+  timeout: 6
+  logRetentionInDays: 7
+  deploymentBucket:
+    name: com.reference-architecture.deploys
+    maxPreviousDeploymentArtifacts: 5
+    serverSideEncryption: AES256
+  environment:
+    EVENT_BUS_NAME: ${self:custom.eventBusName}
+    TABLE_NAME: ${self:custom.tableName}
+
+custom:
+  eventBusName: ${self:service}
+  tableName: ${self:service}
+  stateMachineName: ${self:service}-translate
+
+# Binaries are built by `cargo lambda build --release --arm64 --output-format zip` into
+# target/lambda/<binary>/bootstrap.zip; each function deploys its own prebuilt artifact.
+package:
+  individually: true
+
+functions:
+  createJob:
+    handler: bootstrap
+    package:
+      artifact: target/lambda/createJob/bootstrap.zip
+    events:
+    - httpApi:
+        method: POST
+        path: /jobs
+        authorizer:
+          type: aws_iam
+    iamRoleStatements:
+    - Effect: Allow
+      Action: dynamodb:PutItem
+      Resource: !GetAtt JobsTable.Arn
+
+  getJob:
+    handler: bootstrap
+    package:
+      artifact: target/lambda/getJob/bootstrap.zip
+    events:
+    - httpApi:
+        method: GET
+        path: /jobs/{jobId}
+        authorizer:
+          type: aws_iam
+    iamRoleStatements:
+    - Effect: Allow
+      Action: dynamodb:GetItem
+      Resource: !GetAtt JobsTable.Arn
+
+  onDbStreamEvent:
+    handler: bootstrap
+    package:
+      artifact: target/lambda/onDbStreamEvent/bootstrap.zip
+    events:
+    - stream:
+        type: dynamodb
+        arn: !GetAtt JobsTable.StreamArn
+        batchSize: 10
+    iamRoleStatements:
+    - Effect: Allow
+      Action: events:PutEvents
+      Resource: !GetAtt JobsEventBus.Arn
+
+  onJobCreated:
+    handler: bootstrap
+    package:
+      artifact: target/lambda/onJobCreated/bootstrap.zip
+    environment:
+      TRANSLATE_STATE_MACHINE_ARN: !Ref TranslateStateMachine
+    events:
+    - eventBridge:
+        eventBus: !GetAtt JobsEventBus.Name
+        pattern:
+          source:
+          - job
+          detail-type:
+          - create
+    iamRoleStatements:
+    - Effect: Allow
+      Action: states:StartExecution
+      Resource: !Ref TranslateStateMachine
+
+  setJobStatusStarted:
+    handler: bootstrap
+    package:
+      artifact: target/lambda/setJobStatusStarted/bootstrap.zip
+    iamRoleStatements:
+    - Effect: Allow
+      Action: dynamodb:UpdateItem
+      Resource: !GetAtt JobsTable.Arn
+
+  translatePhrase:
+    handler: bootstrap
+    package:
+      artifact: target/lambda/translatePhrase/bootstrap.zip
+
+  setJobStatusComplete:
+    handler: bootstrap
+    package:
+      artifact: target/lambda/setJobStatusComplete/bootstrap.zip
+    iamRoleStatements:
+    - Effect: Allow
+      Action: dynamodb:UpdateItem
+      Resource: !GetAtt JobsTable.Arn
+
+  setJobStatusFailed:
+    handler: bootstrap
+    package:
+      artifact: target/lambda/setJobStatusFailed/bootstrap.zip
+    iamRoleStatements:
+    - Effect: Allow
+      Action: dynamodb:UpdateItem
+      Resource: !GetAtt JobsTable.Arn
+
+stepFunctions:
+  validate: true
+  stateMachines:
+    translateStateMachine:
+      name: ${self:custom.stateMachineName}
+      type: EXPRESS
+      loggingConfig:
+        level: ALL
+        includeExecutionData: false
+        destinations:
+        - !GetAtt TranslateStateMachineLogGroup.Arn
+      definition:
+        StartAt: Set Job Status Started
+        States:
+          Set Job Status Started:
+            Type: Task
+            Resource: !GetAtt setJobStatusStarted.Arn
+            Retry:
+            - ErrorEquals: [States.ALL]
+              IntervalSeconds: 2
+              MaxAttempts: 3
+              BackoffRate: 2
+            Catch:
+            - ErrorEquals: [States.ALL]
+              ResultPath: $.error
+              Next: Set Job Status Failed
+            Next: Translate Phrase
+          Translate Phrase:
+            Type: Task
+            Resource: !GetAtt translatePhrase.Arn
+            Retry:
+            - ErrorEquals: [States.ALL]
+              IntervalSeconds: 2
+              MaxAttempts: 3
+              BackoffRate: 2
+            Catch:
+            - ErrorEquals: [States.ALL]
+              ResultPath: $.error
+              Next: Set Job Status Failed
+            Next: Set Job Status Completed
+          Set Job Status Completed:
+            Type: Task
+            Resource: !GetAtt setJobStatusComplete.Arn
+            Retry:
+            - ErrorEquals: [States.ALL]
+              IntervalSeconds: 2
+              MaxAttempts: 3
+              BackoffRate: 2
+            Catch:
+            - ErrorEquals: [States.ALL]
+              ResultPath: $.error
+              Next: Set Job Status Failed
+            End: true
+          Set Job Status Failed:
+            Type: Task
+            Resource: !GetAtt setJobStatusFailed.Arn
+            Next: Fail
+          Fail:
+            Type: Fail
+
+resources:
+  Resources:
+    JobsTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        BillingMode: PAY_PER_REQUEST
+        TableName: ${self:custom.tableName}
+        ContributorInsightsSpecification:
+          Enabled: true
+        KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+        AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+        StreamSpecification:
+          StreamViewType: NEW_AND_OLD_IMAGES
+        TimeToLiveSpecification:
+          AttributeName: ttl
+          Enabled: true
+    JobsEventBus:
+      Type: AWS::Events::EventBus
+      Properties:
+        Name: ${self:custom.eventBusName}
+    TranslateStateMachineLogGroup:
+      Type: AWS::Logs::LogGroup
+      Properties:
+        LogGroupName: /stepfunctions/${self:custom.stateMachineName}
+        RetentionInDays: 7
+  Outputs:
+    TableName:
+      Value: !Ref JobsTable
+    EventBusName:
+      Value: !GetAtt JobsEventBus.Name
+
+plugins:
+- serverless-iam-roles-per-function
+- serverless-deployment-bucket
+- serverless-step-functions

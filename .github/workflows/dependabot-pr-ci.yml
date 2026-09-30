@@ -1,0 +1,31 @@
+name: Dependabot PR CI
+
+on:
+  pull_request:
+    branches: [ master ]
+
+# These permissions are needed to interact with GitHub's OIDC Token endpoint.
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  build:
+    if: ${{ github.actor == 'dependabot[bot]' }}
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7
+    - name: Install Rust toolchain (from rust-toolchain.toml)
+      run: rustup toolchain install
+    - uses: Swatinem/rust-cache@v2
+    - name: Lint
+      run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+    - name: Run unit tests
+      run: cargo test --workspace
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v6
+      with:
+        aws-region: us-east-1
+        role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+    - name: Run int tests
+      run: cargo test -p jobs --features integration --test integration

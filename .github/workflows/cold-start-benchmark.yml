@@ -1,0 +1,40 @@
+name: Cold-Start Benchmark
+
+# Forces cold starts on every function of job-pattern-one (Node.js) and this repo (Rust),
+# publishes the results to CloudWatch (namespace SlsRa/ColdStart, retained 15 months) and
+# refreshes the "job-pattern-one-cold-starts" dashboard. Scheduled after both repos' daily
+# deploys; a stack that is missing (weekly teardown) or mid-deploy is skipped and reported.
+#
+# Side effect on the Node.js stack: each function's environment briefly gains PROBE_NONCE
+# (that is what forces a fresh execution environment); the probe removes it afterwards.
+
+on:
+  schedule:
+    - cron: '45 6 * * *'
+  workflow_dispatch:
+    inputs:
+      samples:
+        description: Forced cold starts per function
+        default: '10'
+
+concurrency: cold-start-benchmark
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Rust toolchain (from rust-toolchain.toml)
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-region: us-east-1
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+      - name: Probe cold starts
+        run: cargo run --release -p cold-start-probe -- --samples ${{ inputs.samples || '10' }}
