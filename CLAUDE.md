@@ -95,3 +95,6 @@ This is a reference architecture for **agents that build serverless systems**, a
   The Lambda figure is mostly first-execution overhead (paging in code), which lands on whatever
   runs first in `main`. Dropping `EnvFilter` would also lose per-module `RUST_LOG` directives. Keep
   `lambda_runtime::tracing::init_default_subscriber()`.
+- **zig is installed from the official tarball** in `ci.yml`, pinned by version and SHA-256 (the
+  `mlugg/setup-zig` action targets the deprecated Node 20 Actions runtime). Dependabot can't bump
+  it. To upgrade, take `tarball`/`shasum` for `x86_64-linux` from https://ziglang.org/download/index.json.
