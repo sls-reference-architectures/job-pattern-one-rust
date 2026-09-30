@@ -10,12 +10,17 @@ use serde_json::Value;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Error> {
+    let mut startup = runtime::Startup::begin();
     lambda_runtime::tracing::init_default_subscriber();
+    startup.mark("tracing");
     let config = runtime::aws_config().await;
+    startup.mark("aws_config");
     let starter = WorkflowStarter::new(
         aws_sdk_sfn::Client::new(&config),
         runtime::env("TRANSLATE_STATE_MACHINE_ARN")?,
     );
+    startup.mark("clients");
+    startup.report();
     run(service_fn(|event: LambdaEvent<EventBridgeEvent<Value>>| {
         start(&starter, event)
     }))

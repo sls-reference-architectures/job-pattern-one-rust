@@ -10,8 +10,14 @@ use ulid::Ulid;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Error> {
+    let mut startup = runtime::Startup::begin();
     lambda_http::tracing::init_default_subscriber();
-    let store = runtime::job_store().await?;
+    startup.mark("tracing");
+    let config = runtime::aws_config().await;
+    startup.mark("aws_config");
+    let store = runtime::job_store(&config)?;
+    startup.mark("clients");
+    startup.report();
     run(service_fn(|request: Request| create_job(&store, request))).await
 }
 

@@ -9,12 +9,17 @@ use lambda_runtime::{Error, LambdaEvent, run, service_fn};
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Error> {
+    let mut startup = runtime::Startup::begin();
     lambda_runtime::tracing::init_default_subscriber();
+    startup.mark("tracing");
     let config = runtime::aws_config().await;
+    startup.mark("aws_config");
     let publisher = EventPublisher::new(
         aws_sdk_eventbridge::Client::new(&config),
         runtime::env("EVENT_BUS_NAME")?,
     );
+    startup.mark("clients");
+    startup.report();
     run(service_fn(|event: LambdaEvent<Event>| publish(&publisher, event))).await
 }
 
