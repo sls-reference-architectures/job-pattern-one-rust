@@ -35,7 +35,7 @@ jobs:
       - name: Stub Lambda artifacts referenced by serverless.yml (remove needs no real build)
         run: |
           for f in createJob getJob onDbStreamEvent onJobCreated setJobStatusStarted translatePhrase setJobStatusComplete setJobStatusFailed; do
-            mkdir -p target/lambda/$f && touch target/lambda/$f/bootstrap.zip
+            mkdir -p target/lambda && touch target/lambda/$f.zip
           done
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v6

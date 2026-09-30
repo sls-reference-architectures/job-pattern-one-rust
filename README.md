@@ -81,7 +81,7 @@ Error bodies are `text/plain`; success bodies are `application/json`.
 
 ```bash
 cargo test --workspace                                              # unit tests (pure, no AWS)
-npm ci && npm run build                                             # cargo lambda build → target/lambda/*/bootstrap.zip
+npm ci && npm run build                                             # cargo lambda build → target/lambda/<function>.zip
 npx sls deploy                                                      # deploy stack job-pattern-one-rust-dev
 cargo test -p jobs --features integration --test integration        # adapters against the deployed stack
 cargo test -p acceptance --features acceptance --test acceptance    # specifications against the deployed API

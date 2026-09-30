@@ -30,8 +30,8 @@ custom:
   tableName: ${self:service}
   stateMachineName: ${self:service}-translate
 
-# Binaries are built by `cargo lambda build --release --arm64 --output-format zip` into
-# target/lambda/<binary>/bootstrap.zip; each function deploys its own prebuilt artifact.
+# Binaries are built by scripts/build.sh (cargo lambda, arm64) and staged as
+# target/lambda/<function>.zip. osls keys uploads by file name, so names must be unique.
 package:
   individually: true
 
@@ -39,7 +39,7 @@ functions:
   createJob:
     handler: bootstrap
     package:
-      artifact: target/lambda/createJob/bootstrap.zip
+      artifact: target/lambda/createJob.zip
     events:
     - httpApi:
         method: POST
@@ -54,7 +54,7 @@ functions:
   getJob:
     handler: bootstrap
     package:
-      artifact: target/lambda/getJob/bootstrap.zip
+      artifact: target/lambda/getJob.zip
     events:
     - httpApi:
         method: GET
@@ -69,7 +69,7 @@ functions:
   onDbStreamEvent:
     handler: bootstrap
     package:
-      artifact: target/lambda/onDbStreamEvent/bootstrap.zip
+      artifact: target/lambda/onDbStreamEvent.zip
     events:
     - stream:
         type: dynamodb
@@ -83,7 +83,7 @@ functions:
   onJobCreated:
     handler: bootstrap
     package:
-      artifact: target/lambda/onJobCreated/bootstrap.zip
+      artifact: target/lambda/onJobCreated.zip
     environment:
       TRANSLATE_STATE_MACHINE_ARN: !Ref TranslateStateMachine
     events:
@@ -102,7 +102,7 @@ functions:
   setJobStatusStarted:
     handler: bootstrap
     package:
-      artifact: target/lambda/setJobStatusStarted/bootstrap.zip
+      artifact: target/lambda/setJobStatusStarted.zip
     iamRoleStatements:
     - Effect: Allow
       Action: dynamodb:UpdateItem
@@ -111,12 +111,12 @@ functions:
   translatePhrase:
     handler: bootstrap
     package:
-      artifact: target/lambda/translatePhrase/bootstrap.zip
+      artifact: target/lambda/translatePhrase.zip
 
   setJobStatusComplete:
     handler: bootstrap
     package:
-      artifact: target/lambda/setJobStatusComplete/bootstrap.zip
+      artifact: target/lambda/setJobStatusComplete.zip
     iamRoleStatements:
     - Effect: Allow
       Action: dynamodb:UpdateItem
@@ -125,7 +125,7 @@ functions:
   setJobStatusFailed:
     handler: bootstrap
     package:
-      artifact: target/lambda/setJobStatusFailed/bootstrap.zip
+      artifact: target/lambda/setJobStatusFailed.zip
     iamRoleStatements:
     - Effect: Allow
       Action: dynamodb:UpdateItem
