@@ -13,6 +13,14 @@ updates:
         patterns:
           - "lambda_*"
           - "aws_lambda_events"
+  - package-ecosystem: rust-toolchain # the channel pinned in rust-toolchain.toml
+    directory: "/"
+    schedule:
+      interval: weekly
+  - package-ecosystem: pip # zig (cargo-lambda's cross-linker), hash-pinned
+    directory: "/tools/zig"
+    schedule:
+      interval: weekly
   - package-ecosystem: npm # deployment tooling only (osls + plugins)
     directory: "/"
     schedule:

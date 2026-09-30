@@ -23,17 +23,14 @@ jobs:
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
       - name: Install zig (arm64 cross-linker for cargo-lambda)
-        # Official tarball, pinned and checksum-verified. Replaces mlugg/setup-zig, which still
-        # targets the deprecated Node.js 20 Actions runtime.
-        env:
-          ZIG_VERSION: 0.16.0
-          ZIG_SHA256: 70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00
+        # From PyPI (published by the Zig project), hash-pinned in tools/zig/requirements.txt so
+        # Dependabot keeps it current. Replaces mlugg/setup-zig, which targets Node.js 20.
         run: |
-          curl -sSfL "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" -o zig.tar.xz
-          echo "${ZIG_SHA256}  zig.tar.xz" | sha256sum -c -
-          mkdir -p "$RUNNER_TOOL_CACHE/zig" && tar -xJf zig.tar.xz -C "$RUNNER_TOOL_CACHE/zig" --strip-components=1 && rm zig.tar.xz
-          echo "$RUNNER_TOOL_CACHE/zig" >> "$GITHUB_PATH"
-          "$RUNNER_TOOL_CACHE/zig/zig" version
+          python3 -m venv "$RUNNER_TEMP/zig"
+          "$RUNNER_TEMP/zig/bin/pip" install --quiet --require-hashes --only-binary=:all: -r tools/zig/requirements.txt
+          ln -s "$("$RUNNER_TEMP/zig/bin/python" -c 'import ziglang, os; print(os.path.join(os.path.dirname(ziglang.__file__), "zig"))')" "$RUNNER_TEMP/zig/bin/zig"
+          echo "$RUNNER_TEMP/zig/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/zig/bin/zig" version
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-lambda
