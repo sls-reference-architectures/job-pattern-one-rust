@@ -31,6 +31,14 @@ This is a reference architecture for **agents that build serverless systems**, a
 - **Behavior changes** must be reflected in the README contract. If they differ from the Node sibling, add them to the "Deliberate differences" table.
 - **Topology parity.** Keep memory (1024), timeout (6), arm64, the per-function IAM, and the state-machine definition identical to the sibling. Resource names derive from `${self:service}`. The sibling uses fixed names (`job-pattern-one`, `TranslateStateMachine`), so never hardcode those.
 - **Init-phase work.** SDK clients are built once in `main`, before `run()`. This mirrors the Node functions' module-scope clients, which keeps the init comparison fair. Don't move client construction into handlers.
+- **Performance tuning stays inside the AWS SDK's public configuration.** The official SDK and runtime are why this repo uses Rust.
+  - **How to tune:** use feature flags, `aws_config::defaults(..)` builder options, and the HTTP-client builder.
+  - **Where to stop:** stop tuning when the next gain would require replacing or bypassing SDK behavior. Examples:
+    - hand-building `SdkConfig` instead of `load_defaults`, which drops profile/env settings, retry mode, endpoint overrides, FIPS and dual-stack;
+    - a custom HTTP stack;
+    - patching or forking SDK crates.
+  - **Record trade-offs:** when a supported option still carries a trade-off, write it down in "Known constraints". The Amazon-only trust store is one: it is supported, but it means we own the CA list and no longer inherit the SDK's default HTTPS client improvements.
+  - **Prove it first:** measure with the per-phase `startup` log line (or `examples/init_variants.rs`) before and after a change. Keep only changes that show up in Lambda's Init Duration.
 - **Middleware.** There is no Middy equivalent, and none is needed: request parsing and error mapping are plain domain functions. For real cross-cutting concerns (logging, auth), use **tower** layers. Tower is built into `lambda_runtime`/`lambda_http` (see Luciano Mammino, "Writing middlewares for Rust Lambda functions", 2026). Don't adopt a Middy-clone crate.
 - **Git and CI.** Trunk-based: push straight to `master`, then watch `CI & Test` until it finishes.
 
@@ -72,5 +80,12 @@ This is a reference architecture for **agents that build serverless systems**, a
   Every AWS endpoint chains to one of the five roots. If a call ever fails with an unknown-issuer
   TLS error, AWS has changed CAs: re-extract from the AL2023 bundle and verify SPKI hashes against
   https://www.amazontrust.com/repository/. Never add non-AWS roots: these functions call only AWS.
+  Costs we accepted:
+  - Because we build the HTTPS client ourselves, SDK upgrades that change the default client
+    (TLS provider, settings) are not inherited. Review `aws-smithy-http-client` release notes when
+    Dependabot bumps it.
+  - Any HTTPS endpoint not signed by an Amazon root (a local AWS emulator over TLS, a
+    TLS-intercepting proxy) fails. When copying this pattern to such a setting, don't copy the
+    trust store.
 - `functions/examples/init_variants.rs` reproduces the SDK-init experiment in the Lambda base image
   (see its header). Per-phase init timings are logged on every cold start as `startup ...`.
