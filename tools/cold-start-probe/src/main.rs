@@ -10,22 +10,28 @@
 //! discard warm execution environments; the variable is removed again afterwards.
 
 use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
 use std::time::Duration;
 
+use aws_config::retry::RetryConfig;
 use aws_config::{BehaviorVersion, Region, SdkConfig, meta::region::RegionProviderChain};
 use aws_sdk_cloudwatch::types::{Dimension, MetricDatum, StandardUnit};
 use aws_sdk_lambda::primitives::Blob;
-use aws_sdk_lambda::types::{Environment, LastUpdateStatus, LogType};
+use aws_sdk_lambda::types::{Environment, FunctionConfiguration, LastUpdateStatus, LogType};
 use base64::Engine;
 use probe::dashboard::{self, DASHBOARD_NAME, PATTERN};
 use probe::payloads::probe_for;
 use probe::report::{Results, Sample, Series, markdown_summary, parse_report};
 use probe::{NAMESPACE, Target, function_key, parse_target};
+use tokio::sync::Semaphore;
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
 
 const NONCE: &str = "PROBE_NONCE";
 const DEFAULT_SAMPLES: usize = 10;
+/// Functions probed at once. Each sample makes several control-plane calls
+/// (UpdateFunctionConfiguration counts against Lambda's ~15 requests/s account limit).
+const CONCURRENT_FUNCTIONS: usize = 4;
 
 struct Options {
     samples: usize,
@@ -49,8 +55,11 @@ struct Measured {
 async fn main() -> Result<(), Error> {
     let options = options()?;
     let region = RegionProviderChain::default_provider().or_else(Region::new("us-east-1"));
+    // Lambda's control-plane APIs share a low account-wide rate limit; adaptive retries back off
+    // on throttling instead of failing the sample.
     let config = aws_config::defaults(BehaviorVersion::latest())
         .region(region)
+        .retry_config(RetryConfig::adaptive().with_max_attempts(10))
         .load()
         .await;
     let lambda = aws_sdk_lambda::Client::new(&config);
@@ -59,17 +68,22 @@ async fn main() -> Result<(), Error> {
     for target in &options.targets {
         match discover(&config, target).await {
             Ok(found) => functions.extend(found),
-            Err(reason) => eprintln!("skipping stack {}: {reason}", target.stack),
+            Err(reason) => eprintln!("skipping stack {}: {}", target.stack, chain(&*reason)),
         }
     }
     if functions.is_empty() {
         return Err("no deployed functions to probe".into());
     }
 
+    let slots = Arc::new(Semaphore::new(CONCURRENT_FUNCTIONS));
     let measured: Vec<Measured> = futures_join(functions.into_iter().map(|function| {
         let lambda = lambda.clone();
         let samples = options.samples;
-        async move { measure(&lambda, function, samples).await }
+        let slots = Arc::clone(&slots);
+        async move {
+            let _slot = slots.acquire_owned().await.expect("semaphore is never closed");
+            measure(&lambda, function, samples).await
+        }
     }))
     .await;
 
@@ -120,6 +134,18 @@ async fn main() -> Result<(), Error> {
     } else {
         Err(format!("fewer samples than requested for: {}", incomplete.join(", ")).into())
     }
+}
+
+/// The full cause chain: AWS SDK errors display only "service error" at the top level; the
+/// service's error code and message are in the sources.
+fn chain(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut parts = vec![error.to_string()];
+    let mut source = error.source();
+    while let Some(cause) = source {
+        parts.push(cause.to_string());
+        source = cause.source();
+    }
+    parts.join(": ")
 }
 
 fn options() -> Result<Options, Error> {
@@ -218,11 +244,11 @@ async fn measure(lambda: &aws_sdk_lambda::Client, function: Function, samples: u
         match sample {
             Ok(Some(sample)) => series.samples.push(sample),
             Ok(None) => eprintln!("{}: invocation was not a cold start", function.name),
-            Err(reason) => eprintln!("{}: sample {attempt} failed: {reason}", function.name),
+            Err(reason) => eprintln!("{}: sample {attempt} failed: {}", function.name, chain(&*reason)),
         }
     }
     if let Err(reason) = set_nonce(lambda, &function.name, None).await {
-        eprintln!("{}: could not remove {NONCE}: {reason}", function.name);
+        eprintln!("{}: could not remove {NONCE}: {}", function.name, chain(&*reason));
     }
     Measured {
         function,
@@ -235,11 +261,7 @@ async fn measure(lambda: &aws_sdk_lambda::Client, function: Function, samples: u
 /// for the update to finish. Retries while a deployment holds the function.
 async fn set_nonce(lambda: &aws_sdk_lambda::Client, name: &str, nonce: Option<&str>) -> Result<(), Error> {
     for retry in 0..5u64 {
-        let current = lambda
-            .get_function_configuration()
-            .function_name(name)
-            .send()
-            .await?;
+        let current = configuration(lambda, name).await?;
         let mut variables: HashMap<String, String> = current
             .environment()
             .and_then(|environment| environment.variables())
@@ -271,13 +293,21 @@ async fn set_nonce(lambda: &aws_sdk_lambda::Client, name: &str, nonce: Option<&s
     Err(format!("{name} stayed busy; gave up updating {NONCE}").into())
 }
 
+/// Reads a function's configuration via GetFunction, which has a far higher rate limit than
+/// GetFunctionConfiguration (a throttled control-plane call).
+async fn configuration(lambda: &aws_sdk_lambda::Client, name: &str) -> Result<FunctionConfiguration, Error> {
+    lambda
+        .get_function()
+        .function_name(name)
+        .send()
+        .await?
+        .configuration
+        .ok_or_else(|| format!("{name} has no configuration").into())
+}
+
 async fn wait_until_updated(lambda: &aws_sdk_lambda::Client, name: &str) -> Result<(), Error> {
     for _ in 0..60 {
-        let configuration = lambda
-            .get_function_configuration()
-            .function_name(name)
-            .send()
-            .await?;
+        let configuration = configuration(lambda, name).await?;
         match configuration.last_update_status() {
             Some(LastUpdateStatus::Successful) => return Ok(()),
             Some(LastUpdateStatus::Failed) => {
