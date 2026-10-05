@@ -75,10 +75,24 @@ functions:
         type: dynamodb
         arn: !GetAtt JobsTable.StreamArn
         batchSize: 10
+        # Failure handling at scale. Without these a record that keeps failing is retried until
+        # the stream's 24 h retention drops it, blocking every later change on its shard, and is
+        # then lost silently. Bisect isolates the bad record; after the retry/age cap its
+        # metadata (shard, sequence numbers) goes to a queue that alarms.
+        bisectBatchOnFunctionError: true
+        maximumRetryAttempts: 5
+        maximumRecordAgeInSeconds: 3600
+        destinations:
+          onFailure:
+            arn: !GetAtt OnDbStreamEventFailureQueue.Arn
+            type: sqs
     iamRoleStatements:
     - Effect: Allow
       Action: events:PutEvents
       Resource: !GetAtt JobsEventBus.Arn
+    - Effect: Allow
+      Action: sqs:SendMessage
+      Resource: !GetAtt OnDbStreamEventFailureQueue.Arn
 
   onJobCreated:
     handler: bootstrap
@@ -86,6 +100,14 @@ functions:
       artifact: target/lambda/onJobCreated.zip
     environment:
       TRANSLATE_STATE_MACHINE_ARN: !Ref TranslateStateMachine
+    # Asynchronous invocation: after these retries Lambda would otherwise drop the event and the
+    # job would sit in Pending forever with no trace.
+    maximumRetryAttempts: 2
+    maximumEventAge: 3600
+    destinations:
+      onFailure:
+        arn: !GetAtt OnJobCreatedFailureQueue.Arn
+        type: sqs
     events:
     - eventBridge:
         eventBus: !GetAtt JobsEventBus.Name
@@ -94,10 +116,18 @@ functions:
           - job
           detail-type:
           - create
+        # Events EventBridge cannot deliver to the function (e.g. throttling past the policy).
+        retryPolicy:
+          maximumRetryAttempts: 185
+          maximumEventAge: 3600
+        deadLetterQueueArn: !GetAtt OnJobCreatedFailureQueue.Arn
     iamRoleStatements:
     - Effect: Allow
       Action: states:StartExecution
       Resource: !Ref TranslateStateMachine
+    - Effect: Allow
+      Action: sqs:SendMessage
+      Resource: !GetAtt OnJobCreatedFailureQueue.Arn
 
   setJobStatusStarted:
     handler: bootstrap
@@ -150,15 +180,22 @@ stepFunctions:
             Type: Task
             Resource: !GetAtt setJobStatusStarted.Arn
             Retry:
+            - ErrorEquals: [ConflictError]
+              MaxAttempts: 0
             - ErrorEquals: [States.ALL]
               IntervalSeconds: 2
               MaxAttempts: 3
               BackoffRate: 2
             Catch:
+            - ErrorEquals: [ConflictError]
+              Next: Job Already Started
             - ErrorEquals: [States.ALL]
               ResultPath: $.error
               Next: Set Job Status Failed
             Next: Translate Phrase
+          Job Already Started:
+            Type: Succeed
+            Comment: A duplicate create event; another execution already owns this job.
           Translate Phrase:
             Type: Task
             Resource: !GetAtt translatePhrase.Arn
@@ -212,6 +249,64 @@ resources:
         TimeToLiveSpecification:
           AttributeName: ttl
           Enabled: true
+    OnDbStreamEventFailureQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: ${self:service}-on-db-stream-event-failures
+        MessageRetentionPeriod: 1209600
+    OnJobCreatedFailureQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: ${self:service}-on-job-created-failures
+        MessageRetentionPeriod: 1209600
+    OnJobCreatedFailureQueuePolicy:
+      Type: AWS::SQS::QueuePolicy
+      Properties:
+        Queues:
+        - !Ref OnJobCreatedFailureQueue
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sqs:SendMessage
+            Resource: !GetAtt OnJobCreatedFailureQueue.Arn
+            Condition:
+              ArnLike:
+                aws:SourceArn: !Sub arn:aws:events:${AWS::Region}:${AWS::AccountId}:rule/${self:custom.eventBusName}/*
+    OnDbStreamEventFailuresAlarm:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        AlarmName: ${self:service}-on-db-stream-event-failures
+        AlarmDescription: Stream records exhausted their retries; jobs may be missing events. Messages hold shard and sequence numbers to re-read within 24 h.
+        Namespace: AWS/SQS
+        MetricName: ApproximateNumberOfMessagesVisible
+        Dimensions:
+        - Name: QueueName
+          Value: !GetAtt OnDbStreamEventFailureQueue.QueueName
+        Statistic: Maximum
+        Period: 300
+        EvaluationPeriods: 1
+        Threshold: 0
+        ComparisonOperator: GreaterThanThreshold
+        TreatMissingData: notBreaching
+    OnJobCreatedFailuresAlarm:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        AlarmName: ${self:service}-on-job-created-failures
+        AlarmDescription: Job-created events whose workflow never started; those jobs are stuck in Pending.
+        Namespace: AWS/SQS
+        MetricName: ApproximateNumberOfMessagesVisible
+        Dimensions:
+        - Name: QueueName
+          Value: !GetAtt OnJobCreatedFailureQueue.QueueName
+        Statistic: Maximum
+        Period: 300
+        EvaluationPeriods: 1
+        Threshold: 0
+        ComparisonOperator: GreaterThanThreshold
+        TreatMissingData: notBreaching
     JobsEventBus:
       Type: AWS::Events::EventBus
       Properties:

@@ -81,7 +81,9 @@ impl JobsHttpAdapter {
         let body = json!({ "name": name, "phrase": phrase }).to_string();
         let response = self.send(Method::POST, "/jobs", Some(body)).await?;
         match response.status() {
-            StatusCode::CREATED => Ok(Submission::Accepted(response.json().await?)),
+            StatusCode::CREATED => Ok(Submission::Accepted(JobView::from_record(
+                response.json().await?,
+            )?)),
             StatusCode::FORBIDDEN => Ok(Submission::Refused),
             other => Ok(Submission::Rejected(other.as_u16())),
         }
@@ -90,7 +92,7 @@ impl JobsHttpAdapter {
     pub async fn fetch(&self, id: &str) -> Result<Lookup, Error> {
         let response = self.send(Method::GET, &format!("/jobs/{id}"), None).await?;
         match response.status() {
-            StatusCode::OK => Ok(Lookup::Found(response.json().await?)),
+            StatusCode::OK => Ok(Lookup::Found(JobView::from_record(response.json().await?)?)),
             StatusCode::NOT_FOUND => Ok(Lookup::Missing),
             StatusCode::FORBIDDEN => Ok(Lookup::Refused),
             other => Err(format!("GET /jobs/{id} returned unexpected {other}").into()),

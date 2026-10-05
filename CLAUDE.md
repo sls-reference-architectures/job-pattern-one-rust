@@ -16,7 +16,7 @@ This is a reference architecture for **agents that build serverless systems**, a
 | `functions/src/runtime.rs` | Init-phase setup: AWS config, clients, the shared status-step entry point. |
 | `functions/tests/unit` | Unit tests (no AWS). |
 | `functions/tests/integration` | Remocal tests against the deployed stack (feature `integration`). |
-| `acceptance/` | Farley three-layer acceptance tests: `tests/specs` (domain language) → `src/dsl` → `src/adapters` (SigV4 HTTP). Feature `acceptance`. |
+| `acceptance/` | Farley three-layer acceptance tests: `tests/specs` (domain language) → `src/dsl` → `src/adapters` (SigV4 HTTP; Step Functions `StartSyncExecution` for replaying a job-created notification). Feature `acceptance`. |
 | `tools/cold-start-probe/` | The benchmark CLI. It is never deployed. |
 | `serverless.yml`, `package.json` | Infrastructure (osls v4 + plugins). Node is used only for this tooling. |
 
@@ -99,3 +99,4 @@ This is a reference architecture for **agents that build serverless systems**, a
   `tools/zig/requirements.txt` and installed into a venv in `ci.yml`. Dependabot updates it (`pip`,
   `/tools/zig`), and the Rust channel in `rust-toolchain.toml` (`rust-toolchain`). Locally, a
   Homebrew `zig` works too.
+- **Failure handling is part of the contract, and it's shared with the Node sibling.** The changes are the stream retry caps, batch splitting, failure queues, alarms, and the `ConflictError` → `Job Already Started` branch. They came from *Crafting Lambda Functions in Rust* ch8 (2026-10-05) and were applied identically to `../job-pattern-one`. Change them in both repos, or record the difference in the README. `acceptance/tests/specs/redelivery.rs` proves the duplicate handling on either stack via `STACK_NAME`.

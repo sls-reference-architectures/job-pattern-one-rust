@@ -53,6 +53,19 @@ Error bodies are `text/plain`; success bodies are `application/json`.
 
 **Status changes** use optimistic concurrency. Each one increments `revision` and succeeds only if the stored revision is unchanged. The failures are `NotFoundError` (no such job) and `ConflictError` (the stored revision differs).
 
+**Duplicate notifications are harmless.** EventBridge and Lambda retries deliver at least once, so the workflow can start twice for one job. The duplicate's first step hits `ConflictError` and ends in the `Job Already Started` success state, without retrying and without touching the job. Consumers of `update` events should order them by `revision`, because EventBridge doesn't guarantee delivery order.
+
+**Failures are bounded and visible.** Each queue keeps messages for 14 days and has a CloudWatch alarm. The alarms have no notification target; wire one up per environment.
+- **Stream consumer** (`onDbStreamEvent`):
+  - splits a failing batch to isolate the bad record;
+  - retries 5 times and gives up on records older than 1 hour;
+  - sends what still fails to `job-pattern-one-rust-on-db-stream-event-failures`. Those messages hold the shard and sequence numbers, so re-read the stream within its 24 h retention.
+- **`onJobCreated`:**
+  - events EventBridge can't deliver (retried for up to 1 hour), and invocations that still fail after Lambda's 2 async retries, both go to `job-pattern-one-rust-on-job-created-failures`;
+  - jobs named there are stuck in `Pending`.
+
+The Node.js sibling has the same failure handling.
+
 ### Deliberate differences from the Node.js sibling
 | Behavior | Node.js | Rust |
 |---|---|---|

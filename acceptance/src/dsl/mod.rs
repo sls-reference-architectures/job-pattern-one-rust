@@ -3,6 +3,7 @@
 use std::time::Duration;
 
 use crate::adapters::http::{JobsHttpAdapter, Lookup, Submission};
+use crate::adapters::workflow::{RunOutcome, WorkflowAdapter};
 use crate::adapters::{Error, JobView};
 
 pub use crate::adapters::JobView as Job;
@@ -96,4 +97,34 @@ pub fn unique_name(label: &str) -> String {
 
 pub fn status_of(job: &JobView) -> &str {
     job.status.as_deref().unwrap_or_default()
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Redelivery {
+    /// The repeat was recognised and changed nothing.
+    Ignored,
+    /// The repeat was treated as a failure.
+    Disrupted(String),
+}
+
+/// The background processing that turns a requested job into a completed one.
+pub struct JobProcessing {
+    adapter: WorkflowAdapter,
+}
+
+impl JobProcessing {
+    pub async fn connect() -> Result<Self, Error> {
+        Ok(Self {
+            adapter: WorkflowAdapter::connect().await?,
+        })
+    }
+
+    /// Delivers the news that `job` was created a second time, as at-least-once delivery and
+    /// retries can. `job` must be the job as originally created.
+    pub async fn hears_again_that_job_was_created(&self, job: &Job) -> Result<Redelivery, Error> {
+        Ok(match self.adapter.run(&job.record).await? {
+            RunOutcome::Succeeded => Redelivery::Ignored,
+            RunOutcome::Failed { error, cause } => Redelivery::Disrupted(format!("{error}: {cause}")),
+        })
+    }
 }
