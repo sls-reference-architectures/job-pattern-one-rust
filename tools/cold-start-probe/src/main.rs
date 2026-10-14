@@ -22,12 +22,11 @@ use base64::Engine;
 use probe::dashboard::{self, DASHBOARD_NAME, PATTERN};
 use probe::payloads::probe_for;
 use probe::report::{Results, Sample, Series, markdown_summary, parse_report};
-use probe::{NAMESPACE, Target, function_key, parse_target};
+use probe::{NAMESPACE, NONCE, Target, carries_nonce, function_key, parse_target};
 use tokio::sync::Semaphore;
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
 
-const NONCE: &str = "PROBE_NONCE";
 const DEFAULT_SAMPLES: usize = 10;
 /// Functions probed at once. Each sample makes several control-plane calls
 /// (UpdateFunctionConfiguration counts against Lambda's ~15 requests/s account limit).
@@ -279,7 +278,7 @@ async fn set_nonce(lambda: &aws_sdk_lambda::Client, name: &str, nonce: Option<&s
             .send()
             .await;
         match updated {
-            Ok(_) => return wait_until_updated(lambda, name).await,
+            Ok(_) => return wait_until_updated(lambda, name, nonce).await,
             Err(error) => {
                 let error = error.into_service_error();
                 if error.is_resource_conflict_exception() || error.is_too_many_requests_exception() {
@@ -305,9 +304,20 @@ async fn configuration(lambda: &aws_sdk_lambda::Client, name: &str) -> Result<Fu
         .ok_or_else(|| format!("{name} has no configuration").into())
 }
 
-async fn wait_until_updated(lambda: &aws_sdk_lambda::Client, name: &str) -> Result<(), Error> {
+async fn wait_until_updated(
+    lambda: &aws_sdk_lambda::Client,
+    name: &str,
+    nonce: Option<&str>,
+) -> Result<(), Error> {
     for _ in 0..60 {
         let configuration = configuration(lambda, name).await?;
+        let variables = configuration
+            .environment()
+            .and_then(|environment| environment.variables());
+        if !carries_nonce(variables, nonce) {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            continue;
+        }
         match configuration.last_update_status() {
             Some(LastUpdateStatus::Successful) => return Ok(()),
             Some(LastUpdateStatus::Failed) => {

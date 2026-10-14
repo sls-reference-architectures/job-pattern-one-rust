@@ -4,8 +4,23 @@ pub mod dashboard;
 pub mod payloads;
 pub mod report;
 
+use std::collections::HashMap;
+
 /// CloudWatch namespace every probe metric is published under.
 pub const NAMESPACE: &str = "SlsRa/ColdStart";
+
+/// Environment variable whose change forces Lambda to discard warm execution environments.
+pub const NONCE: &str = "PROBE_NONCE";
+
+/// Whether a function's environment reflects the nonce update just made (`None`: removed).
+/// GetFunction can briefly return the configuration from before that update, still marked
+/// `Successful` from the previous one; invoking then reuses a warm environment.
+pub fn carries_nonce(variables: Option<&HashMap<String, String>>, nonce: Option<&str>) -> bool {
+    variables
+        .and_then(|variables| variables.get(NONCE))
+        .map(String::as_str)
+        == nonce
+}
 
 /// The deployed stack under test and the runtime label its samples are recorded with.
 #[derive(Clone, Debug, PartialEq, Eq)]
