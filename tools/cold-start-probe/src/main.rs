@@ -31,6 +31,11 @@ const DEFAULT_SAMPLES: usize = 10;
 /// Functions probed at once. Each sample makes several control-plane calls
 /// (UpdateFunctionConfiguration counts against Lambda's ~15 requests/s account limit).
 const CONCURRENT_FUNCTIONS: usize = 4;
+/// Attempt budget per requested sample. Even after GetFunction shows the new nonce as
+/// `Successful`, Lambda can briefly route invokes to an environment from the previous
+/// configuration (2026-10-16: 6 of 10 on the Node setJobStatusStarted). No API reports when
+/// routing has caught up, so a warm sample is retried with a fresh nonce instead.
+const ATTEMPTS_PER_SAMPLE: usize = 3;
 
 struct Options {
     samples: usize,
@@ -233,7 +238,9 @@ async fn measure(lambda: &aws_sdk_lambda::Client, function: Function, samples: u
     let probe = probe_for(&function.key).expect("discovered functions all have probes");
     let payload = probe.payload.to_string();
     let mut series = Series::default();
-    for attempt in 0..samples {
+    let mut attempt = 0;
+    while series.samples.len() < samples && attempt < samples * ATTEMPTS_PER_SAMPLE {
+        attempt += 1;
         let nonce = format!("{}-{attempt}", std::process::id());
         let sample = async {
             set_nonce(lambda, &function.name, Some(&nonce)).await?;

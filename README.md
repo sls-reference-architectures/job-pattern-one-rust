@@ -83,6 +83,8 @@ The Node.js sibling has the same failure handling.
 - the duration of the first invocation
 - max memory used
 
+Only invocations whose REPORT carries an Init Duration count. Right after a configuration change, Lambda can still route an invoke to a warm environment; that sample is discarded and retried with a new nonce, up to 3 attempts per requested sample. The run fails if a function still ends up short.
+
 **Where the results go**
 - CloudWatch metrics, namespace `SlsRa/ColdStart`, kept for 15 months.
 - The `job-pattern-one-cold-starts` dashboard.
