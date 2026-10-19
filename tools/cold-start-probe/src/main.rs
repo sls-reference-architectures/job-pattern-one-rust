@@ -11,7 +11,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use aws_config::retry::RetryConfig;
 use aws_config::{BehaviorVersion, Region, SdkConfig, meta::region::RegionProviderChain};
@@ -20,8 +20,9 @@ use aws_sdk_lambda::primitives::Blob;
 use aws_sdk_lambda::types::{Environment, FunctionConfiguration, LastUpdateStatus, LogType};
 use base64::Engine;
 use probe::dashboard::{self, DASHBOARD_NAME, PATTERN};
+use probe::diagnosis::{LogLine, describe, explain};
 use probe::payloads::probe_for;
-use probe::report::{Results, Sample, Series, markdown_summary, parse_report};
+use probe::report::{Results, Series, markdown_summary, parse_report, request_id};
 use probe::{NAMESPACE, NONCE, Target, carries_nonce, function_key, parse_target};
 use tokio::sync::Semaphore;
 
@@ -32,10 +33,18 @@ const DEFAULT_SAMPLES: usize = 10;
 /// (UpdateFunctionConfiguration counts against Lambda's ~15 requests/s account limit).
 const CONCURRENT_FUNCTIONS: usize = 4;
 /// Attempt budget per requested sample. Even after GetFunction shows the new nonce as
-/// `Successful`, Lambda can briefly route invokes to an environment from the previous
-/// configuration (2026-10-16: 6 of 10 on the Node setJobStatusStarted). No API reports when
-/// routing has caught up, so a warm sample is retried with a fresh nonce instead.
+/// `Successful`, an invoke can come back warm (2026-10-16: 6 of 10 on the Node
+/// setJobStatusStarted). No API reports when that stops, so a warm sample is retried with a fresh
+/// nonce instead.
 const ATTEMPTS_PER_SAMPLE: usize = 3;
+/// Pause before retrying after a warm sample, per consecutive warm sample, capped. Retrying at
+/// once kept coming back warm for a whole function's attempt budget (2026-10-17: 26 in a row on
+/// the Rust setJobStatusFailed; 2026-10-18: 26 on the Rust onJobCreated).
+const WARM_BACKOFF: Duration = Duration::from_secs(10);
+const MAX_WARM_BACKOFF: Duration = Duration::from_secs(30);
+/// Warm samples per function whose log stream is looked up to explain how they were served.
+/// Function logs are kept 7 days and deleted with the stack, so the workflow log keeps the evidence.
+const EXPLAINED_PER_FUNCTION: usize = 3;
 
 struct Options {
     samples: usize,
@@ -53,6 +62,15 @@ struct Measured {
     function: Function,
     series: Series,
     comparable_first_invoke: bool,
+    warm: Vec<Warm>,
+}
+
+/// A sample that came back warm.
+struct Warm {
+    attempt: usize,
+    request_id: String,
+    /// When the probe saw this attempt's nonce update as `Successful` (epoch ms).
+    updated_at_ms: i64,
 }
 
 #[tokio::main]
@@ -90,6 +108,7 @@ async fn main() -> Result<(), Error> {
         }
     }))
     .await;
+    explain_warm_samples(&config, &measured).await;
 
     let runtimes: Vec<String> = options
         .targets
@@ -238,18 +257,40 @@ async fn measure(lambda: &aws_sdk_lambda::Client, function: Function, samples: u
     let probe = probe_for(&function.key).expect("discovered functions all have probes");
     let payload = probe.payload.to_string();
     let mut series = Series::default();
+    let mut warm = Vec::new();
+    let mut consecutive_warm: u32 = 0;
     let mut attempt = 0;
     while series.samples.len() < samples && attempt < samples * ATTEMPTS_PER_SAMPLE {
         attempt += 1;
+        if consecutive_warm > 0 {
+            tokio::time::sleep((WARM_BACKOFF * consecutive_warm).min(MAX_WARM_BACKOFF)).await;
+        }
         let nonce = format!("{}-{attempt}", std::process::id());
         let sample = async {
             set_nonce(lambda, &function.name, Some(&nonce)).await?;
-            invoke(lambda, &function.name, &payload).await
+            let updated_at_ms = epoch_ms();
+            let log = invoke(lambda, &function.name, &payload).await?;
+            Ok::<_, Error>((updated_at_ms, log))
         }
         .await;
         match sample {
-            Ok(Some(sample)) => series.samples.push(sample),
-            Ok(None) => eprintln!("{}: invocation was not a cold start", function.name),
+            Ok((updated_at_ms, log)) => match parse_report(&log) {
+                Some(sample) => {
+                    consecutive_warm = 0;
+                    series.samples.push(sample);
+                }
+                None => {
+                    consecutive_warm += 1;
+                    eprintln!("{}: attempt {attempt} was not a cold start", function.name);
+                    if let Some(id) = request_id(&log) {
+                        warm.push(Warm {
+                            attempt,
+                            request_id: id.to_owned(),
+                            updated_at_ms,
+                        });
+                    }
+                }
+            },
             Err(reason) => eprintln!("{}: sample {attempt} failed: {}", function.name, chain(&*reason)),
         }
     }
@@ -260,7 +301,90 @@ async fn measure(lambda: &aws_sdk_lambda::Client, function: Function, samples: u
         function,
         series,
         comparable_first_invoke: probe.comparable_first_invoke,
+        warm,
     }
+}
+
+fn epoch_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis() as i64)
+}
+
+/// Prints, for the first few warm samples of each function, how the environment that served them
+/// came to be warm. Diagnostic only: lookup failures are reported, never fatal.
+async fn explain_warm_samples(config: &SdkConfig, measured: &[Measured]) {
+    let logs = aws_sdk_cloudwatchlogs::Client::new(config);
+    for entry in measured {
+        for warm in entry.warm.iter().take(EXPLAINED_PER_FUNCTION) {
+            let name = &entry.function.name;
+            let explanation = match served_by(&logs, name, warm).await {
+                Ok(stream) => describe(&explain(&stream, &warm.request_id, warm.updated_at_ms)),
+                Err(reason) => format!("could not read its log stream: {}", chain(&*reason)),
+            };
+            eprintln!(
+                "{name}: attempt {} ({}) {explanation}",
+                warm.attempt, warm.request_id
+            );
+        }
+    }
+}
+
+/// The log stream of the environment that handled a warm sample. Log delivery lags the invoke by
+/// a few seconds, so the lookup is retried briefly.
+async fn served_by(
+    logs: &aws_sdk_cloudwatchlogs::Client,
+    function_name: &str,
+    warm: &Warm,
+) -> Result<Vec<LogLine>, Error> {
+    let group = format!("/aws/lambda/{function_name}");
+    let mut stream = None;
+    for _ in 0..4 {
+        // FilterLogEvents can return empty pages before the one holding the match.
+        let mut pages = logs
+            .filter_log_events()
+            .log_group_name(&group)
+            .start_time(warm.updated_at_ms - 60_000)
+            .filter_pattern(format!("\"START RequestId: {}\"", warm.request_id))
+            .into_paginator()
+            .send();
+        while let Some(page) = pages.next().await {
+            stream = page?
+                .events()
+                .first()
+                .and_then(|event| event.log_stream_name())
+                .map(ToOwned::to_owned);
+            if stream.is_some() {
+                break;
+            }
+        }
+        if stream.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    }
+    let Some(stream) = stream else {
+        return Ok(Vec::new());
+    };
+    let mut lines = Vec::new();
+    let mut pages = logs
+        .get_log_events()
+        .log_group_name(&group)
+        .log_stream_name(stream)
+        .start_from_head(true)
+        .into_paginator()
+        .send();
+    while let Some(page) = pages.next().await {
+        let page = page?;
+        if page.events().is_empty() {
+            break;
+        }
+        lines.extend(page.events().iter().map(|event| LogLine {
+            timestamp_ms: event.timestamp().unwrap_or_default(),
+            message: event.message().unwrap_or_default().to_owned(),
+        }));
+    }
+    Ok(lines)
 }
 
 /// Sets (or, with `None`, removes) the nonce variable, preserving every other variable, then waits
@@ -340,7 +464,8 @@ async fn wait_until_updated(
     Err(format!("{name} update did not finish within 60 s").into())
 }
 
-async fn invoke(lambda: &aws_sdk_lambda::Client, name: &str, payload: &str) -> Result<Option<Sample>, Error> {
+/// Invokes the function and returns the tail of its log output.
+async fn invoke(lambda: &aws_sdk_lambda::Client, name: &str, payload: &str) -> Result<String, Error> {
     let output = lambda
         .invoke()
         .function_name(name)
@@ -349,7 +474,7 @@ async fn invoke(lambda: &aws_sdk_lambda::Client, name: &str, payload: &str) -> R
         .send()
         .await?;
     let log = base64::engine::general_purpose::STANDARD.decode(output.log_result().unwrap_or_default())?;
-    Ok(parse_report(&String::from_utf8_lossy(&log)))
+    Ok(String::from_utf8_lossy(&log).into_owned())
 }
 
 async fn publish_metrics(config: &SdkConfig, measured: &[Measured]) -> Result<(), Error> {

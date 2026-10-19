@@ -28,6 +28,15 @@ pub fn parse_report(log: &str) -> Option<Sample> {
     })
 }
 
+/// The request id on the last REPORT line of invocation log output.
+pub fn request_id(log: &str) -> Option<&str> {
+    log.lines()
+        .rev()
+        .find_map(|line| line.strip_prefix("REPORT RequestId: "))?
+        .split_whitespace()
+        .next()
+}
+
 /// Nearest-rank percentile (`p` in 0..=100). `None` for an empty slice.
 pub fn percentile(values: &[f64], p: f64) -> Option<f64> {
     if values.is_empty() {

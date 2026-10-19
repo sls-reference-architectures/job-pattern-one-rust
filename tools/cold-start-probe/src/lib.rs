@@ -1,6 +1,7 @@
 //! Pure building blocks for the cold-start probe; `main.rs` wires them to AWS.
 
 pub mod dashboard;
+pub mod diagnosis;
 pub mod payloads;
 pub mod report;
 

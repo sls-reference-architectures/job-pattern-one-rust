@@ -83,7 +83,9 @@ The Node.js sibling has the same failure handling.
 - the duration of the first invocation
 - max memory used
 
-Only invocations whose REPORT carries an Init Duration count. Right after a configuration change, Lambda can still route an invoke to a warm environment; that sample is discarded and retried with a new nonce, up to 3 attempts per requested sample. The run fails if a function still ends up short.
+Only invocations whose REPORT carries an Init Duration count. Even right after a configuration change, an invoke can come back warm. That sample is discarded and retried with a new nonce, up to 3 attempts per requested sample. Before each retry the probe waits 10 s per consecutive warm sample, capped at 30 s. The run fails if a function still ends up short.
+
+For the first 3 warm samples of each function, the probe looks up the log stream of the environment that served the invoke and writes the finding to the workflow log. It reports either an environment that had already served invocations (reused across the nonce update) or a first invocation of an environment Lambda initialised ahead of the invoke (proactive initialisation, whose REPORT has no Init Duration). Function logs last 7 days and are deleted with the stack, so the workflow log is the lasting record.
 
 **Where the results go**
 - CloudWatch metrics, namespace `SlsRa/ColdStart`, kept for 15 months.

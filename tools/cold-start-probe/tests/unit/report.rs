@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use probe::report::{Results, Sample, Series, markdown_summary, parse_report, percentile};
+use probe::report::{Results, Sample, Series, markdown_summary, parse_report, percentile, request_id};
 
 const COLD: &str = "START RequestId: abc Version: $LATEST\nhello\nEND RequestId: abc\nREPORT RequestId: abc\tDuration: 12.34 ms\tBilled Duration: 80 ms\tMemory Size: 1024 MB\tMax Memory Used: 33 MB\tInit Duration: 66.25 ms\t\n";
 const WARM: &str = "REPORT RequestId: abc\tDuration: 2.10 ms\tBilled Duration: 3 ms\tMemory Size: 1024 MB\tMax Memory Used: 35 MB\t\n";
@@ -151,4 +151,16 @@ fn a_runtime_without_samples_shows_dashes() {
         summary.contains("| getJob | – | – | – | 0 | 50 | 50 | 5 | 1 |"),
         "{summary}"
     );
+}
+
+#[test]
+fn a_warm_report_line_still_names_its_request() {
+    // ARRANGE
+    let log = WARM;
+
+    // ACT
+    let id = request_id(log);
+
+    // ASSERT
+    assert_eq!(id, Some("abc"));
 }

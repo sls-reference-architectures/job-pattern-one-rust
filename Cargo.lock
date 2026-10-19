@@ -232,6 +232,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-sdk-cloudwatchlogs"
+version = "1.156.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6ed1946748f8af6758c208e177107fbbd855c45d59f6c28997d4a7d38aabb79a"
+dependencies = [
+ "arc-swap",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-eventstream",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema",
+ "aws-smithy-types",
+ "aws-types",
+ "bytes",
+ "fastrand",
+ "http 1.5.0",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
 name = "aws-sdk-dynamodb"
 version = "1.128.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -873,6 +899,7 @@ dependencies = [
  "aws-config",
  "aws-sdk-cloudformation",
  "aws-sdk-cloudwatch",
+ "aws-sdk-cloudwatchlogs",
  "aws-sdk-lambda",
  "base64 0.23.1",
  "serde_json",
